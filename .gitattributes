@@ -1,0 +1,7 @@
+# port/ is built with MSYS2 bash and make, which break on CRLF: keep it LF on every checkout.
+port/** text=auto eol=lf
+port/**/*.png binary
+port/**/*.ico binary
+port/**/*.ttf binary
+port/**/*.otf binary
+port/**/*.dds binary
