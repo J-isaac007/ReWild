@@ -9,6 +9,11 @@ void renderer_sync(void);
 
 static uint64_t next_debug_id = 1;
 
+// The renderer runs on the guest thread that submits or presents (LASRecomp's game has one render thread). BotW also
+// finalizes textures, programs and pools on its loading threads: render_lock keeps that (and submits from several
+// threads) out of a running execution, which read freed objects and corrupted the host heap (texture registry).
+static pthread_mutex_t render_lock = PTHREAD_MUTEX_INITIALIZER;
+
 // ================================================================== device
 // NVNdeviceInfo -> value
 static uint32_t device_integer(uint32_t which) {
@@ -115,10 +120,17 @@ NVN(nvnQueueResetMemoryUsageCounts) { (void)c; }
 NVN(nvnQueueSubmitCommands) {
     int n = (int)A(1);
     const uint64_t *handles = AP(2);
+    pthread_mutex_lock(&render_lock);
     for (int i = 0; i < n; i++) backend_execute(handles[i]);
+    pthread_mutex_unlock(&render_lock);
 }
 NVN(nvnQueueFlush) { (void)c; }
-NVN(nvnQueueFinish) { (void)c; renderer_sync(); }
+NVN(nvnQueueFinish) {
+    (void)c;
+    pthread_mutex_lock(&render_lock);
+    renderer_sync();
+    pthread_mutex_unlock(&render_lock);
+}
 
 static NvnSync *sync_of(uint64_t guest) {
     NvnSync *s = HOST(NvnSync, guest);
@@ -187,10 +199,20 @@ NVN(nvnMemoryPoolInitialize) {
     p->storage = G(uint64_t, A(1), 0x10);
     p->size = G(uint64_t, A(1), 0x18);
     p->flags = G(uint32_t, A(1), 8);
+    if (!p->storage)
+        LOG("[nvn] memory pool %llx without storage: size %llu flags %#x\n", (unsigned long long)A(0),
+            (unsigned long long)p->size, p->flags);
     SET_HOST(A(0), p);
     RET(1);
 }
-NVN(nvnMemoryPoolFinalize) { free(HOST(NvnPool, A(0))); SET_HOST(A(0), 0); }
+NVN(nvnMemoryPoolFinalize) {
+    NvnPool *p = HOST(NvnPool, A(0));
+    pthread_mutex_lock(&render_lock);
+    if (p) free(p->users);
+    free(p);
+    SET_HOST(A(0), 0);
+    pthread_mutex_unlock(&render_lock);
+}
 NVN(nvnMemoryPoolSetDebugLabel) { (void)c; }
 NVN(nvnMemoryPoolMap) { RET(HOST(NvnPool, A(0))->storage); }
 NVN(nvnMemoryPoolGetBufferAddress) { RET(HOST(NvnPool, A(0))->storage); }  // GPU address == CPU address
@@ -201,7 +223,44 @@ NVN(nvnMemoryPoolFlushMappedRange) {
     backend_pool_written(p->storage + A(1), A(2));
 }
 NVN(nvnMemoryPoolInvalidateMappedRange) { (void)c; }
-NVN(nvnMemoryPoolMapVirtual) { RET(1); }
+// Virtual pools: no storage of their own; nvnMemoryPoolMapVirtual maps physical pool memory into them. GPU address ==
+// CPU address here, so the one case handled is a virtual pool mapped whole and contiguously onto one physical pool
+// (BotW: a 120 MB pool, one request): the pool takes that memory's address, and the textures and buffers made from it
+// before the mapping (address 0 + offset until then) are fixed up. Anything else is logged.
+static void pool_add_user(NvnPool *p, NvnTexture *tex, uint64_t buffer, uint64_t offset) {
+    if (p->nusers == p->cap_users) {
+        p->cap_users = p->cap_users ? p->cap_users * 2 : 16;
+        p->users = realloc(p->users, p->cap_users * sizeof *p->users);
+    }
+    p->users[p->nusers++] = (NvnPoolUser){tex, buffer, offset};
+}
+
+NVN(nvnMemoryPoolMapVirtual) {
+    // (pool, count, const NVNmappingRequest*): 0x20-byte requests {physical pool, physical offset, virtual offset,
+    // size (u32), storage class (u32)}
+    NvnPool *p = HOST(NvnPool, A(0));
+    uint64_t n = A(1);
+    const uint8_t *r = (const uint8_t *)(uintptr_t)A(2);
+    uint64_t phys = n ? *(const uint64_t *)r : 0, phys_off = n ? *(const uint64_t *)(r + 8) : 0;
+    uint64_t virt_off = n ? *(const uint64_t *)(r + 16) : 0, size = n ? *(const uint32_t *)(r + 24) : 0;
+    if (n == 1 && phys && virt_off == 0 && size >= p->size) {
+        p->storage = HOST(NvnPool, phys)->storage + phys_off;
+        for (int i = 0; i < p->nusers; i++) {
+            NvnPoolUser *u = &p->users[i];
+            if (u->tex) u->tex->addr = p->storage + u->offset;
+            else G(uint64_t, u->buffer, 0) = p->storage + u->offset;
+        }
+        LOG("[nvn] virtual pool %llx mapped whole onto %llx (%d textures / buffers fixed up)\n", (unsigned long long)A(0),
+            (unsigned long long)p->storage, p->nusers);
+    } else {
+        static int warned;
+        if (warned++ < 10)
+            LOG("[nvn] MapVirtual pool %llx: %llu requests (first: physical %llx +%llx -> virtual +%llx size %llu): only a "
+                "whole, contiguous mapping is supported\n", (unsigned long long)A(0), (unsigned long long)n,
+                (unsigned long long)phys, (unsigned long long)phys_off, (unsigned long long)virt_off, (unsigned long long)size);
+    }
+    RET(1);
+}
 
 // ================================================================== buffers
 // Builder: device@0 pool@8 offset@0x10 size@0x18. Buffer: address@0 pool@8 offset@0x10 size@0x18 id@0x20
@@ -217,6 +276,7 @@ NVN(nvnBufferBuilderGetSize) { RET(G(uint64_t, A(0), 0x18)); }
 NVN(nvnBufferInitialize) {
     uint64_t pool = G(uint64_t, A(1), 8), off = G(uint64_t, A(1), 0x10);
     G(uint64_t, A(0), 0) = HOST(NvnPool, pool)->storage + off;
+    if (!HOST(NvnPool, pool)->storage) pool_add_user(HOST(NvnPool, pool), NULL, A(0), off);  // (virtual: mapped later)
     G(uint64_t, A(0), 8) = pool;
     G(uint64_t, A(0), 0x10) = off;
     G(uint64_t, A(0), 0x18) = G(uint64_t, A(1), 0x18);
@@ -336,6 +396,7 @@ NVN(nvnTextureBuilderGetStorageAlignment) { RET(is_linear(A(0)) ? 32 : 512); }
 
 static NvnTexture *texture_from_builder(uint64_t b) {
     NvnTexture *t = calloc(1, sizeof *t);
+    t->magic = NVN_TEXTURE_MAGIC;
     t->target = G(uint32_t, b, 0xC);
     t->flags = G(uint32_t, b, 8);
     t->width = G(uint32_t, b, 0x10);
@@ -351,6 +412,7 @@ static NvnTexture *texture_from_builder(uint64_t b) {
     t->pool = pool ? HOST(NvnPool, pool) : NULL;
     t->pool_offset = G(uint64_t, b, 0x40);
     t->addr = t->pool ? t->pool->storage + t->pool_offset : 0;
+    if (t->pool && !t->pool->storage) pool_add_user(t->pool, t, 0, t->pool_offset);  // (virtual: mapped later)
     builder_layout(b, &t->layout);
     t->debug_id = next_debug_id++;
     return t;
@@ -365,9 +427,32 @@ NVN(nvnTextureInitialize) {
     RET(1);
 }
 NVN(nvnTextureFinalize) {
+    // The renderer's side goes; the NvnTexture stays. An NVNtexture is plain descriptor data on NVN, and games copy it
+    // by value: BotW's agl::driver::NVNMgr registers copies of textures into the texture pool after finalizing the
+    // originals, which then pointed at a freed NvnTexture (caught by the guard heap). A copy used again gets a new
+    // renderer image. (Kept textures: a few hundred bytes each, counted in the log.)
     NvnTexture *t = HOST(NvnTexture, A(0));
-    if (t) { backend_texture_destroyed(t); free(t); }
+    pthread_mutex_lock(&render_lock);
+    if (t) {
+        backend_texture_destroyed(t);
+        static uint64_t kept, next_report = 1024;
+        if (++kept >= next_report) {
+            next_report *= 4;
+            LOG("[nvn] %llu finalized textures kept for copies\n", (unsigned long long)kept);
+        }
+    }
     SET_HOST(A(0), 0);
+    pthread_mutex_unlock(&render_lock);
+}
+
+NvnTexture *nvn_texture(uint64_t guest, const char *what, uint64_t lr) {
+    NvnTexture *t = HOST(NvnTexture, guest);
+    if ((uintptr_t)t >= 0x10000 && t->magic == NVN_TEXTURE_MAGIC) return t;
+    static int warned;
+    if (warned++ < 20)
+        LOG("[nvn] %s: NVNtexture %llx holds no texture (%p; lr %llx)\n", what, (unsigned long long)guest, (void *)t,
+            (unsigned long long)lr);
+    return NULL;
 }
 NVN(nvnTextureSetDebugLabel) {
     NvnTexture *t = HOST(NvnTexture, A(0));
@@ -473,15 +558,19 @@ NVN(nvnSamplerBuilderGetMaxAnisotropy) { RETF(SD->max_aniso); }
 NVN(nvnSamplerBuilderGetReductionFilter) { RET(SD->reduction); }
 NVN(nvnSamplerBuilderGetLodSnap) { RETF(0); }
 
+// An NVNsampler (96 bytes) holds its NvnSamplerDesc at 8, as the builder does, not a host pointer: games copy samplers
+// by value (BotW's agl::driver::NVNMgr::registerSampler keeps copies and compares new samplers against them), and a
+// copy's pointer outlived the sampler it came from (read after free, caught by the guard heap).
+_Static_assert(8 + sizeof(NvnSamplerDesc) <= 96, "NvnSamplerDesc fits in an NVNsampler");
+#define SAMPLER(guest) ((NvnSamplerDesc *)(uintptr_t)((guest) + 8))
+#define SMP SAMPLER(A(0))
 NVN(nvnSamplerInitialize) {
-    NvnSamplerDesc *d = malloc(sizeof *d);
-    *d = *(NvnSamplerDesc *)(AP(1) + 8);
-    SET_HOST(A(0), d);
+    *SMP = *(NvnSamplerDesc *)(AP(1) + 8);
+    SMP->backend = NULL;
     RET(1);
 }
-NVN(nvnSamplerFinalize) { free(HOST(NvnSamplerDesc, A(0))); SET_HOST(A(0), 0); }
+NVN(nvnSamplerFinalize) { (void)c; }
 NVN(nvnSamplerSetDebugLabel) { (void)c; }
-#define SMP HOST(NvnSamplerDesc, A(0))
 NVN(nvnSamplerGetMinMagFilter) { *(uint32_t *)AP(1) = SMP->min_filter; *(uint32_t *)AP(2) = SMP->mag_filter; }
 NVN(nvnSamplerGetWrapMode) { for (int i = 0; i < 3; i++) *(uint32_t *)AP(1 + i) = SMP->wrap[i]; }
 NVN(nvnSamplerGetLodClamp) { *(float *)AP(1) = SMP->lod_min; *(float *)AP(2) = SMP->lod_max; }
@@ -492,7 +581,7 @@ NVN(nvnSamplerGetBorderColori) { memcpy(AP(1), SMP->border, 16); }
 NVN(nvnSamplerGetBorderColorui) { memcpy(AP(1), SMP->border, 16); }
 NVN(nvnSamplerGetMaxAnisotropy) { RETF(SMP->max_aniso); }
 NVN(nvnSamplerGetReductionFilter) { RET(SMP->reduction); }
-NVN(nvnSamplerCompare) { RET(memcmp(HOST(NvnSamplerDesc, A(0)), HOST(NvnSamplerDesc, A(1)), sizeof(NvnSamplerDesc)) == 0); }
+NVN(nvnSamplerCompare) { RET(memcmp(SMP, SAMPLER(A(1)), offsetof(NvnSamplerDesc, backend)) == 0); }
 NVN(nvnSamplerGetDebugID) { RET(A(0)); }
 
 // ================================================================== descriptor pools
@@ -526,7 +615,7 @@ static void register_texture(Cpu *c) {
     int id = (int)A(1);
     if (id < 0 || id >= d->count) return;
     NvnTexEntry *e = &((NvnTexEntry *)d->entries)[id];
-    e->tex = HOST(NvnTexture, A(2));
+    e->tex = A(2) ? nvn_texture(A(2), "texture pool entry", c->x[30]) : NULL;
     e->has_view = A(3) != 0;
     if (e->has_view) memcpy(&e->view, AP(3), sizeof e->view);
 }
@@ -545,12 +634,18 @@ NVN(nvnSamplerPoolGetSize) { RET(G(uint32_t, A(0), 24)); }
 NVN(nvnSamplerPoolRegisterSampler) {
     NvnDescPool *d = HOST(NvnDescPool, A(0));
     int id = (int)A(1);
-    if (id >= 0 && id < d->count) ((NvnSamplerDesc *)d->entries)[id] = *HOST(NvnSamplerDesc, A(2));
+    if (id < 0 || id >= d->count) return;
+    NvnSamplerDesc *e = &((NvnSamplerDesc *)d->entries)[id];
+    *e = *SAMPLER(A(2));
+    e->backend = NULL;  // (the entry's own renderer sampler, made at first use)
 }
 NVN(nvnSamplerPoolRegisterSamplerBuilder) {
     NvnDescPool *d = HOST(NvnDescPool, A(0));
     int id = (int)A(1);
-    if (id >= 0 && id < d->count) ((NvnSamplerDesc *)d->entries)[id] = *(NvnSamplerDesc *)(AP(2) + 8);
+    if (id < 0 || id >= d->count) return;
+    NvnSamplerDesc *e = &((NvnSamplerDesc *)d->entries)[id];
+    *e = *(NvnSamplerDesc *)(AP(2) + 8);
+    e->backend = NULL;
 }
 
 NvnDescPool *nvn_find_pool(NvnDescPool **reg, uint64_t guest_pool) {
@@ -559,7 +654,12 @@ NvnDescPool *nvn_find_pool(NvnDescPool **reg, uint64_t guest_pool) {
 
 // ================================================================== programs
 NVN(nvnProgramInitialize) { SET_HOST(A(0), calloc(1, sizeof(NvnProgram))); RET(1); }
-NVN(nvnProgramFinalize) { free(HOST(NvnProgram, A(0))); SET_HOST(A(0), 0); }
+NVN(nvnProgramFinalize) {
+    pthread_mutex_lock(&render_lock);
+    free(HOST(NvnProgram, A(0)));
+    SET_HOST(A(0), 0);
+    pthread_mutex_unlock(&render_lock);
+}
 NVN(nvnProgramSetDebugLabel) { (void)c; }
 NVN(nvnProgramSetSampleShading) { (void)c; }
 NVN(nvnProgramSetSubroutineLinkage) { RET(1); }
@@ -654,7 +754,10 @@ NVN(nvnQueueAcquireTexture) {
 NVN(nvnQueuePresentTexture) {
     NvnWindow *w = HOST(NvnWindow, A(1));
     int i = (int)A(2);
-    if (i >= 0 && i < w->num) backend_present(HOST(NvnTexture, w->textures[i]));
+    if (i < 0 || i >= w->num) return;
+    pthread_mutex_lock(&render_lock);
+    backend_present(HOST(NvnTexture, w->textures[i]));
+    pthread_mutex_unlock(&render_lock);
 }
 
 // ================================================================== small state objects

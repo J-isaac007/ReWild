@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include "cpu.h"
+#include "game_info.h"
 #include "platform.h"
 
 #define LOG(...) fprintf(stderr, __VA_ARGS__)
@@ -37,7 +38,7 @@ typedef struct Module {
     uint64_t symtab, strtab, nsyms;
 } Module;
 
-extern Module g_modules[4];
+extern Module g_modules[GAME_MAX_MODULES];  // (in GAME_MODULES order, those whose file exists)
 extern int g_nmodules;
 void loader_load(const char *exefs_dir);  // (again after a reboot: modules are reloaded into wiped memory)
 uint64_t loader_find_symbol(const char *name);

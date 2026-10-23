@@ -2420,7 +2420,13 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
 
 // ------------------------------------------------------------------ executor
 static void exec_list(uint64_t handle, int depth) {
-    uint64_t p = handle;
+    const CmdRec *first = nvn_list_first(handle);  // (the handle's records: runtime/nvn/cmdbuf.c)
+    if (!first) {
+        static int warned;
+        if (warned++ < 10) LOG("[metal] command handle %llx names no recorded list (depth %d)\n", (unsigned long long)handle, depth);
+        return;
+    }
+    uint64_t p = (uint64_t)(uintptr_t)first;
     for (int guard = 0; guard < 10000000; guard++) {
         CmdRec *r = (CmdRec *)(uintptr_t)p;
         void *x = r->extra;

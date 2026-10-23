@@ -13,3 +13,9 @@
 #define GAME_SETTINGS_FILE "botwrecomp.ini"
 #define GAME_RELEASES_URL  "https://api.github.com/repos/J-isaac007/ReWild/releases?per_page=100"
 #define GAME_RELEASE_PAGE  "https://github.com/J-isaac007/ReWild/releases/tag/"
+
+// The game's code modules (the NSOs in exefs/ it runs) as X(name, guest base): main first, bases ascending, each below
+// the next and the last below HLE_BASE (runtime/rt.h; the loader checks). LASRecomp had main + sdk fixed; BotW v1.5.0
+// also has subsdk0 (nn::movie). rtld isn't loaded: the loader does its job. The Makefile's GAME_MODULES is the same list.
+#define GAME_MODULES X(main, 0x7000000000ull) X(sdk, 0x7004000000ull) X(subsdk0, 0x7005000000ull)
+#define GAME_MAX_MODULES 8

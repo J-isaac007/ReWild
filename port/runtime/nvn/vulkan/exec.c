@@ -3551,9 +3551,25 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
 
 // ================================================================== executor (renderer.m exec_list)
 static void exec_list(uint64_t handle, int depth) {
-    uint64_t p = handle;
+    const CmdRec *first = nvn_list_first(handle);  // (the handle's records: runtime/nvn/cmdbuf.c)
+    if (!first) {
+        static int warned;
+        if (warned++ < 10) LOG("[vk] command handle %llx names no recorded list (depth %d)\n", (unsigned long long)handle, depth);
+        return;
+    }
+    uint64_t p = (uint64_t)(uintptr_t)first, prev = 0;
+    uint32_t prev_op = ~0u;
     for (int guard = 0; guard < 10000000; guard++) {
         CmdRec *r = (CmdRec *)(uintptr_t)p;
+        if (r->op >= CMD_COUNT || r->size < sizeof(CmdRec) || (r->size & 7)) {  // (not a record: report, skip the rest)
+            static int warned;
+            if (warned++ < 10)
+                LOG("[vk] bad command record at %llx: op %u size %u (list %llx depth %d, after op %u at %llx)\n",
+                    (unsigned long long)p, r->op, r->size, (unsigned long long)handle, depth, prev_op,
+                    (unsigned long long)prev);
+            return;
+        }
+        prev = p, prev_op = r->op;
         void *x = r->extra;
         if (r->op < CMD_COUNT) op_counts[r->op]++;
         switch (r->op) {
@@ -3614,6 +3630,14 @@ static void exec_list(uint64_t handle, int depth) {
             st.rt.depth = (NvnTexture *)(uintptr_t)rt->depth;
             st.rt.dview = rt->dview;
             st.rt.has_dview = rt->has_dview;
+            for (int i = 0; i <= st.rt.ncolor; i++) {  // (finalized since the list was recorded: dropped)
+                NvnTexture **t = i < st.rt.ncolor ? &st.rt.color[i] : &st.rt.depth;
+                if (*t && (*t)->magic != NVN_TEXTURE_MAGIC) {
+                    static int warned;
+                    if (warned++ < 20) LOG("[vk] render target %p is no longer a texture (list %llx)\n", (void *)*t, (unsigned long long)handle);
+                    *t = NULL;
+                }
+            }
             static int always = -1;
             if (always < 0) always = getenv("LARECOMP_VK_PASS_RESTART") != NULL;
             if (always || memcmp(&prev, &st.rt, sizeof prev)) st.rt_dirty = true;

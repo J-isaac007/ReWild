@@ -24,14 +24,21 @@
 #ifndef GAMELIB_ID
 #define GAMELIB_ID "dev"
 #endif
-#define GAMELIB_ABI 1
+// 2: a list of modules (GAME_MODULES) instead of LASRecomp's fixed main + sdk pair; nxrt's format 2 as well
+#define GAMELIB_ABI 2
+
+typedef struct {
+    const char *name;       // the module (GAME_MODULES)
+    const uint64_t *addrs;  // sorted guest addresses
+    const GuestFn *fns;     // the functions at them
+    const uint64_t *count;
+} GameLibModule;
 
 typedef struct {
     uint32_t abi;    // GAMELIB_ABI
     const char *id;  // GAMELIB_ID
-    const uint64_t *main_addrs, *sdk_addrs;  // sorted guest addresses
-    const GuestFn *main_fns, *sdk_fns;       // the functions at them
-    const uint64_t *main_count, *sdk_count;
+    uint32_t nmodules;
+    const GameLibModule *modules;
 } GameLibTables;
 
 // The library's one exported function (tools/gamelib_entry.c).

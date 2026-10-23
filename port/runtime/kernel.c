@@ -222,12 +222,13 @@ static KThread *thread_new(uint64_t entry, uint64_t arg, uint64_t stack_top, int
 }
 
 static void thread_start(KThread *t) {
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, 256ull << 20);  // guest recursion runs on the host stack
     t->started = true;
-    pthread_create(&t->host, &attr, thread_main, t);
-    pthread_attr_destroy(&attr);
+    // 256 MB: guest recursion runs on the host stack (Windows: reserved, not committed: platform.h)
+    int err = plat_thread_spawn(&t->host, thread_main, t, 256ull << 20);
+    if (err) {
+        t->started = false;
+        LOG("[kernel] StartThread id %llx: host thread not created (error %d)\n", (unsigned long long)t->id, err);
+    }
 }
 
 KThread *kernel_create_main_thread(uint64_t entry, uint64_t stack_size, int prio) {
@@ -488,6 +489,7 @@ static uint32_t svc_wait_synchronization(uint64_t handles_ptr, int32_t count, in
         if (g_rt_unwind) { r = R_CANCELLED; goto out; }
         if (timeout == 0) { r = R_TIMEOUT; goto out; }
         t->in_sync_wait = true;
+        t->sync_handles = handles_ptr, t->sync_count = count;
         t->snext = g_syncwaiters;
         g_syncwaiters = t;
         bool ok = kwait(timeout < 0 ? -1 : timeout, &ts);
@@ -814,7 +816,7 @@ void kernel_stop_threads(void (*idle)(void)) {
     }
     int n = 0;
     for (KThread *t = g_threads; t; t = t->anext)
-        if (t->started) { pthread_join(t->host, NULL); n++; }
+        if (t->started) { plat_thread_join(t->host); n++; }
     LOG("[reboot] %d guest threads stopped in %llums\n", n, (unsigned long long)((plat_now_ns() - t0) / 1000000));
 }
 
@@ -839,6 +841,8 @@ void kernel_reset(void) {
     pthread_mutex_unlock(&g_klock);
 }
 
+void kernel_dump_threads_start(void);  // (below)
+
 void kernel_init(void) {
     // Reserve the heap, alias, stack, and TLS regions.
     region_add(TLS_BASE, TLS_SIZE, 0xC, 3);
@@ -848,6 +852,53 @@ void kernel_init(void) {
         region_add(m->base + m->ro_off, m->data_off - m->ro_off, 3, 1);
         region_add(m->base + m->data_off, m->size - m->data_off, 4, 3);
     }
+    kernel_dump_threads_start();
+}
+
+// LARECOMP_DUMP_THREADS=<seconds> (debugging a hang): every that many seconds (3 times), log each guest thread's
+// state and what it waits on. lr is the guest call site of its blocking svc (name it with tools/sym.py, or reWild's
+// scripts/dev/decomp-name.ps1 for main).
+static void kernel_dump_threads(void) {
+    static const char *const kinds[] = {"-", "mutex", "condvar", "arbiter"};
+    pthread_mutex_lock(&g_klock);
+    LOG("[threads] ---- dump\n");
+    for (KThread *t = g_threads; t; t = t->anext)
+        LOG("[threads] id %llx handle %x prio %d %s wait %s%s addr %llx mutex %llx  pc %llx lr %llx sp %llx\n",
+            (unsigned long long)t->id, t->handle, t->prio, t->finished ? "finished" : t->started ? "running" : "created",
+            kinds[t->wait_kind < 4 ? t->wait_kind : 0], t->in_sync_wait ? " +WaitSynchronization" : "",
+            (unsigned long long)t->wait_addr, (unsigned long long)t->wait_mutex, (unsigned long long)t->cpu.pc,
+            (unsigned long long)t->cpu.x[30], (unsigned long long)t->cpu.sp);
+    for (KThread *t = g_threads; t; t = t->anext) {  // what WaitSynchronization waits on: handles, threads by id
+        if (!t->in_sync_wait) continue;
+        const uint32_t *hs = (const uint32_t *)(uintptr_t)t->sync_handles;
+        for (int i = 0; i < t->sync_count && i < 8; i++) {
+            KObject *o = handle_get(hs[i]);
+            const char *what = !o ? "invalid" : o->type == KOBJ_THREAD ? "thread" : o->type == KOBJ_EVENT ? "event"
+                             : o->type == KOBJ_SESSION ? "session" : "other";
+            uint64_t tid = o && o->type == KOBJ_THREAD ? ((KThread *)o)->id : 0;
+            LOG("[threads]   id %llx waits on handle %x: %s%s%llx%s\n", (unsigned long long)t->id, hs[i], what,
+                tid ? " id " : "", (unsigned long long)tid, o && o->signaled ? " (signaled)" : "");
+        }
+    }
+    pthread_mutex_unlock(&g_klock);
+}
+
+static void *dump_threads_main(void *arg) {
+    unsigned secs = (unsigned)(uintptr_t)arg;
+    for (int i = 0; i < 3; i++) {
+        sleep(secs);
+        kernel_dump_threads();
+    }
+    return NULL;
+}
+
+void kernel_dump_threads_start(void) {
+    static bool started;
+    const char *e = getenv("LARECOMP_DUMP_THREADS");
+    if (started || !e || atoi(e) <= 0) return;
+    started = true;
+    pthread_t th;
+    pthread_create(&th, NULL, dump_threads_main, (void *)(uintptr_t)atoi(e));
 }
 
 KEvent *kernel_create_event_pair(uint32_t *w, uint32_t *r) {

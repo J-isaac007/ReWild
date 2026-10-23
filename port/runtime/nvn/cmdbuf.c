@@ -1,12 +1,19 @@
-// NVN command buffers: commands are recorded into the guest-provided command memory as CmdRec
-// records, so the game's own memory management and out-of-memory callbacks work as designed.
-// A command handle is the guest address of a list's first record.
+// NVN command buffers. A recorded list's commands are CmdRec records in storage the runtime owns, one list per place
+// it's recorded at (control memory position and command buffer, below), not in the game's command memory: BotW's agl
+// display lists have several threads recording into the same command memory at once, which corrupted the lists while
+// records lived there (LASRecomp's design; reWild research/B2-boot-log.md). Command and control memory are still
+// accounted (used / free move a little per command and per list, as the game's offset bookkeeping expects) but never
+// written. A command buffer without control memory places its lists by their command memory position instead.
 #include <stdlib.h>
 #include <string.h>
 
 #include "nvn.h"
 
-#define JUMP_RESERVE (sizeof(CmdRec) + 8)
+#define JUMP_RESERVE (sizeof(CmdRec) + 8)  // room kept at a chunk's end to chain to the next one
+#define CMD_MEM_PER_CMD 16                 // command memory a command counts as (a few GPU words on NVN)
+#define CTRL_MEM_PER_LIST 32               // control memory a list counts as
+#define CHUNK_MIN 0x1000                   // a list's first chunk; each next one is 4x bigger, up to CHUNK_MAX
+#define CHUNK_MAX 0x40000
 
 static NvnCmdBuf *cb_of(uint64_t guest) { return HOST(NvnCmdBuf, guest); }
 
@@ -19,72 +26,248 @@ NVN(nvnCommandBufferInitialize) {
 NVN(nvnCommandBufferFinalize) { free(cb_of(A(0))); SET_HOST(A(0), 0); }
 NVN(nvnCommandBufferSetDebugLabel) { (void)c; }
 
-static CmdRec *raw_rec(uint64_t at, uint32_t op, uint32_t size) {
-    CmdRec *r = (CmdRec *)(uintptr_t)at;
+static CmdRec *raw_rec(uint8_t *at, uint32_t op, uint32_t size) {
+    CmdRec *r = (CmdRec *)at;
     memset(r, 0, sizeof *r);
     r->op = op;
     r->size = size;
     return r;
 }
 
+// LARECOMP_LOG_CMDBUF=1: command and control memory, recordings and calls
+static int log_cmdbuf = -1;
+static bool cmdbuf_log(void) {
+    if (log_cmdbuf < 0) log_cmdbuf = getenv("LARECOMP_LOG_CMDBUF") != NULL;
+    return log_cmdbuf;
+}
+
+// ------------------------------------------------------------------ list storage
+// A list's records live in a chain of chunks (CMD_JUMP between them). A list belongs to its place: the control memory
+// position it was recorded at and the command buffer recording it. Recording at a place that already has a list
+// replaces it and reuses its chunks, as NVN reuses the control memory: lists stay bounded by the places a game uses.
+// The handle is the runtime's own, one per place, not the control memory address NVN would return: BotW's
+// agl::DisplayList hands every display list a slice of one shared ring at its current offset and moves the offset on at
+// endDisplayList, so display lists recorded at once on different threads (presumably serialized on the console's
+// cooperative per-core scheduling, truly parallel here) start at the same position. Keyed by position alone they shared
+// one list and corrupted it (reWild research/B2-boot-log.md).
+typedef struct { uint8_t *mem; uint32_t size; } Chunk;
+struct NvnList {
+    uint64_t handle;
+    uint64_t pos, cb;  // its place: control (else command) memory position, guest command buffer
+    Chunk *chunks;
+    int nchunks, cap;
+    int cur;       // write position while recording: chunk, offset
+    uint32_t off;
+    uint64_t recorder;  // the guest command buffer recording it, 0 once ended
+};
+// open addressing, one table by handle and one by place
+typedef struct { NvnList **slot; uint32_t cap, n; } ListTable;
+static ListTable by_handle, by_place;
+static uint64_t list_bytes, next_handle = 0x7F00000000ull;  // (handles: outside guest memory, 16 apart)
+static pthread_mutex_t list_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static uint64_t place_key(uint64_t pos, uint64_t cb) { return pos ^ (cb * 0xC2B2AE3D27D4EB4Full); }
+static uint32_t slot_of(const ListTable *t, uint64_t k) {
+    return (uint32_t)((k * 0x9E3779B97F4A7C15ull) >> 32) & (t->cap - 1);
+}
+
+static NvnList *find_handle_locked(uint64_t h) {
+    if (!by_handle.cap) return NULL;
+    for (uint32_t i = slot_of(&by_handle, h);; i = (i + 1) & (by_handle.cap - 1)) {
+        NvnList *l = by_handle.slot[i];
+        if (!l || l->handle == h) return l;
+    }
+}
+
+static NvnList *find_place_locked(uint64_t pos, uint64_t cb) {
+    if (!by_place.cap) return NULL;
+    for (uint32_t i = slot_of(&by_place, place_key(pos, cb));; i = (i + 1) & (by_place.cap - 1)) {
+        NvnList *l = by_place.slot[i];
+        if (!l || (l->pos == pos && l->cb == cb)) return l;
+    }
+}
+
+static void insert_locked(ListTable *t, NvnList *l, uint64_t (*key)(const NvnList *)) {
+    if ((t->n + 1) * 2 > t->cap) {  // (load factor 1/2)
+        NvnList **old = t->slot;
+        uint32_t old_cap = t->cap;
+        t->cap = t->cap ? t->cap * 2 : 1024;
+        t->slot = calloc(t->cap, sizeof *t->slot);
+        for (uint32_t i = 0; i < old_cap; i++)
+            if (old[i]) {
+                uint32_t j = slot_of(t, key(old[i]));
+                while (t->slot[j]) j = (j + 1) & (t->cap - 1);
+                t->slot[j] = old[i];
+            }
+        free(old);
+    }
+    uint32_t j = slot_of(t, key(l));
+    while (t->slot[j]) j = (j + 1) & (t->cap - 1);
+    t->slot[j] = l;
+    t->n++;
+}
+static uint64_t key_handle(const NvnList *l) { return l->handle; }
+static uint64_t key_place(const NvnList *l) { return place_key(l->pos, l->cb); }
+
+static void add_chunk(NvnList *l, int at, uint32_t need) {
+    uint32_t size = at == 0 ? CHUNK_MIN : l->chunks[at - 1].size * 4;
+    if (size > CHUNK_MAX) size = CHUNK_MAX;
+    if (size < need) size = need;
+    if (at == l->cap) {
+        l->cap = l->cap ? l->cap * 2 : 4;
+        l->chunks = realloc(l->chunks, l->cap * sizeof *l->chunks);
+    }
+    if (at < l->nchunks) {  // (re-recording: a chunk too small for this record is replaced)
+        list_bytes -= l->chunks[at].size;
+        free(l->chunks[at].mem);
+    } else {
+        l->nchunks = at + 1;
+    }
+    l->chunks[at] = (Chunk){malloc(size), size};
+    if (!l->chunks[at].mem) FATAL("nvn: out of host memory for command lists\n");
+    list_bytes += size;
+}
+
+// The list to record at a place: a new one, or the old one emptied for re-recording.
+static NvnList *list_for(uint64_t pos, uint64_t cb) {
+    pthread_mutex_lock(&list_lock);
+    NvnList *l = find_place_locked(pos, cb);
+    if (!l) {
+        l = calloc(1, sizeof *l);
+        l->handle = next_handle += 16;
+        l->pos = pos, l->cb = cb;
+        add_chunk(l, 0, 0);
+        insert_locked(&by_handle, l, key_handle);
+        insert_locked(&by_place, l, key_place);
+        static uint32_t next_report = 256;
+        if (by_handle.n >= next_report) {
+            next_report *= 4;
+            LOG("[nvn] %u command lists (%.1f MB of records)\n", by_handle.n, list_bytes / 1048576.0);
+        }
+    }
+    l->cur = 0, l->off = 0;
+    l->recorder = cb;
+    pthread_mutex_unlock(&list_lock);
+    return l;
+}
+
+static NvnList *list_find(uint64_t handle) {
+    pthread_mutex_lock(&list_lock);
+    NvnList *l = find_handle_locked(handle);
+    pthread_mutex_unlock(&list_lock);
+    return l;
+}
+
+const CmdRec *nvn_list_first(uint64_t handle) {
+    NvnList *l = list_find(handle);
+    return l ? (const CmdRec *)l->chunks[0].mem : NULL;
+}
+
+// Reboot: the old game's lists go.
+RT_ON_RESET(nvn_lists_reset) {
+    for (uint32_t i = 0; i < by_handle.cap; i++) {
+        NvnList *l = by_handle.slot[i];
+        if (!l) continue;
+        for (int k = 0; k < l->nchunks; k++) free(l->chunks[k].mem);
+        free(l->chunks);
+        free(l);
+    }
+    free(by_handle.slot), free(by_place.slot);
+    by_handle = by_place = (ListTable){0};
+    list_bytes = 0;
+}
+
+// ------------------------------------------------------------------ command and control memory
 NVN(nvnCommandBufferAddCommandMemory) {
     NvnCmdBuf *cb = cb_of(A(0));
     uint64_t mem = HOST(NvnPool, A(1))->storage + A(2), size = A(3);
-    if (cb->recording && cb->mem) {
-        // chain the list being recorded into the new chunk
-        CmdRec *j = raw_rec(cb->mem + cb->used, CMD_JUMP, sizeof(CmdRec));
-        j->x[0] = mem;
-    }
-    cb->mem = mem;
-    cb->size = size;
-    cb->used = 0;
+    if (cmdbuf_log())
+        LOG("[cmdbuf] %llx add command memory %llx size %llu (recording %d, lr %llx)\n", (unsigned long long)cb->guest,
+            (unsigned long long)mem, (unsigned long long)size, cb->recording, (unsigned long long)c->x[30]);
+    cb->mem = mem, cb->size = size, cb->used = 0;
 }
-NVN(nvnCommandBufferAddControlMemory) { (void)c; }
-NVN(nvnCommandBufferGetCommandMemorySize) { RET(cb_of(A(0))->size); }
-NVN(nvnCommandBufferGetCommandMemoryUsed) { RET(cb_of(A(0))->used); }
-NVN(nvnCommandBufferGetCommandMemoryFree) {
+NVN(nvnCommandBufferAddControlMemory) {
     NvnCmdBuf *cb = cb_of(A(0));
-    RET(cb->size > cb->used + JUMP_RESERVE ? cb->size - cb->used - JUMP_RESERVE : 0);
+    if (cmdbuf_log())
+        LOG("[cmdbuf] %llx add control memory %llx size %llu (recording %d, lr %llx)\n", (unsigned long long)cb->guest,
+            (unsigned long long)A(1), (unsigned long long)A(2), cb->recording, (unsigned long long)c->x[30]);
+    cb->ctrl = A(1), cb->ctrl_size = A(2), cb->ctrl_used = 0;
 }
-NVN(nvnCommandBufferGetControlMemorySize) { RET(0x10000); }
-NVN(nvnCommandBufferGetControlMemoryUsed) { RET(0); }
-NVN(nvnCommandBufferGetControlMemoryFree) { RET(0x10000); }
+NVN(nvnCommandBufferGetCommandMemorySize) { RET(cb_of(A(0))->size); }
+NVN(nvnCommandBufferGetCommandMemoryUsed) {
+    NvnCmdBuf *cb = cb_of(A(0));
+    if (cmdbuf_log())
+        LOG("[cmdbuf] %llx used? -> %llu (mem %llx, lr %llx)\n", (unsigned long long)cb->guest, (unsigned long long)cb->used,
+            (unsigned long long)cb->mem, (unsigned long long)c->x[30]);
+    RET(cb->used);
+}
+NVN(nvnCommandBufferGetCommandMemoryFree) { NvnCmdBuf *cb = cb_of(A(0)); RET(cb->size - cb->used); }
+NVN(nvnCommandBufferGetControlMemorySize) { RET(cb_of(A(0))->ctrl_size); }
+// (ctrl_used runs on past the size, so each list keeps its own handle; the game sees at most the size)
+NVN(nvnCommandBufferGetControlMemoryUsed) {
+    NvnCmdBuf *cb = cb_of(A(0));
+    RET(cb->ctrl_used < cb->ctrl_size ? cb->ctrl_used : cb->ctrl_size);
+}
+NVN(nvnCommandBufferGetControlMemoryFree) {
+    NvnCmdBuf *cb = cb_of(A(0));
+    RET(cb->ctrl_used < cb->ctrl_size ? cb->ctrl_size - cb->ctrl_used : 0);
+}
+// (the out-of-memory callback is kept for Get*: the runtime never runs out, so it's never called)
 NVN(nvnCommandBufferSetMemoryCallback) { cb_of(A(0))->callback = A(1); }
 NVN(nvnCommandBufferGetMemoryCallback) { RET(cb_of(A(0))->callback); }
 NVN(nvnCommandBufferSetMemoryCallbackData) { cb_of(A(0))->callback_data = A(1); }
 NVN(nvnCommandBufferGetMemoryCallbackData) { RET(cb_of(A(0))->callback_data); }
 NVN(nvnCommandBufferSetCommandMemoryCallbackEnabled) { (void)c; }
 
-// Reserve a record. May call back into the guest for more memory, so callers snapshot their
-// arguments first.
+// Reserve a record in the list being recorded. Commands outside a recording go to a scratch record (dropped).
 static CmdRec *rec(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra) {
+    (void)c;
     uint32_t size = (uint32_t)((sizeof(CmdRec) + extra + 7) & ~7u);
-    for (int tries = 0; !cb->mem || cb->used + size + JUMP_RESERVE > cb->size; tries++) {
-        if (!cb->callback || tries == 2) FATAL("nvn: out of command memory (need %u)\n", size);
-        uint64_t saved[8];
-        memcpy(saved, c->x, sizeof saved);
-        c->x[0] = cb->guest;
-        c->x[1] = 0;  // NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_COMMAND_MEMORY
-        c->x[2] = size + JUMP_RESERVE;
-        c->x[3] = cb->callback_data;
-        guest_call(c, cb->callback);
-        memcpy(c->x, saved, sizeof saved);
+    NvnList *l = cb->list;
+    if (!l) {
+        static __thread uint8_t *scratch;
+        static __thread uint32_t scratch_size;
+        static int warned;
+        if (warned++ < 5) LOG("[nvn] command %u outside a recording on cmdbuf %llx: dropped\n", op, (unsigned long long)cb->guest);
+        if (scratch_size < size) free(scratch), scratch = malloc(size), scratch_size = size;
+        return raw_rec(scratch, op, size);
     }
-    CmdRec *r = raw_rec(cb->mem + cb->used, op, size);
-    cb->used += size;
+    if (l->off + size + JUMP_RESERVE > l->chunks[l->cur].size) {  // chain into the next chunk
+        int next = l->cur + 1;
+        if (next == l->nchunks || l->chunks[next].size < size + JUMP_RESERVE) {
+            pthread_mutex_lock(&list_lock);  // (list_bytes)
+            add_chunk(l, next, size + JUMP_RESERVE);
+            pthread_mutex_unlock(&list_lock);
+        }
+        CmdRec *j = raw_rec(l->chunks[l->cur].mem + l->off, CMD_JUMP, sizeof(CmdRec));
+        j->x[0] = (uint64_t)(uintptr_t)l->chunks[next].mem;
+        l->cur = next, l->off = 0;
+    }
+    CmdRec *r = raw_rec(l->chunks[l->cur].mem + l->off, op, size);
+    l->off += size;
+    if (cb->used + CMD_MEM_PER_CMD <= cb->size) cb->used += CMD_MEM_PER_CMD;
     return r;
 }
 
 NVN(nvnCommandBufferBeginRecording) {
     NvnCmdBuf *cb = cb_of(A(0));
     cb->recording = true;
-    rec(c, cb, CMD_BARRIER, 0);  // makes sure memory exists; the list starts here
-    cb->start = cb->mem + cb->used - sizeof(CmdRec);
+    cb->list = list_for(cb->ctrl ? cb->ctrl + cb->ctrl_used : cb->mem + cb->used, cb->guest);
+    cb->start = cb->list->handle;
+    rec(c, cb, CMD_BARRIER, 0);  // the list starts here
 }
 NVN(nvnCommandBufferEndRecording) {
     NvnCmdBuf *cb = cb_of(A(0));
     rec(c, cb, CMD_END, 0);
     cb->recording = false;
+    if (cb->list) cb->list->recorder = 0;
+    cb->list = NULL;
+    cb->ctrl_used += CTRL_MEM_PER_LIST;
+    if (cmdbuf_log())
+        LOG("[cmdbuf] %llx end -> handle %llx (command used %llu of %llu, control used %llu of %llu, lr %llx)\n",
+            (unsigned long long)cb->guest, (unsigned long long)cb->start, (unsigned long long)cb->used,
+            (unsigned long long)cb->size, (unsigned long long)cb->ctrl_used, (unsigned long long)cb->ctrl_size,
+            (unsigned long long)c->x[30]);
     RET(cb->start);
 }
 NVN(nvnCommandBufferIsRecording) { RET(cb_of(A(0))->recording); }
@@ -206,10 +389,10 @@ NVN(nvnCommandBufferSetRenderTargets) {
     RtRec rt = {0};
     const uint64_t *colors = (const uint64_t *)(uintptr_t)s.x[2], *views = (const uint64_t *)(uintptr_t)s.x[3];
     for (int i = 0; i < n; i++) {
-        rt.tex[i] = colors && colors[i] ? (uint64_t)(uintptr_t)HOST(NvnTexture, colors[i]) : 0;
+        rt.tex[i] = colors && colors[i] ? (uint64_t)(uintptr_t)nvn_texture(colors[i], "color target", c->x[30]) : 0;
         if (views && views[i]) { rt.has_view[i] = 1; memcpy(&rt.views[i], (void *)(uintptr_t)views[i], sizeof(NvnTextureView)); }
     }
-    rt.depth = s.x[4] ? (uint64_t)(uintptr_t)HOST(NvnTexture, s.x[4]) : 0;
+    rt.depth = s.x[4] ? (uint64_t)(uintptr_t)nvn_texture(s.x[4], "depth target", c->x[30]) : 0;
     if (s.x[5]) { rt.has_dview = 1; memcpy(&rt.dview, (void *)(uintptr_t)s.x[5], sizeof(NvnTextureView)); }
     CmdRec *r = record(c, CMD_SET_RENDER_TARGETS, sizeof rt, &s);
     r->x[0] = (uint64_t)n;
@@ -299,7 +482,7 @@ typedef struct { uint64_t tex; NvnTextureView view; uint8_t has_view; int32_t re
 static void clear_texture(Cpu *c, int kind) {
     Snap s = snap(c);
     ClearTexRec ct = {0};
-    ct.tex = (uint64_t)(uintptr_t)HOST(NvnTexture, s.x[1]);
+    ct.tex = s.x[1] ? (uint64_t)(uintptr_t)nvn_texture(s.x[1], "clear texture", c->x[30]) : 0;
     if (s.x[2]) { ct.has_view = 1; memcpy(&ct.view, (void *)(uintptr_t)s.x[2], sizeof ct.view); }
     if (s.x[3]) memcpy(ct.region, (void *)(uintptr_t)s.x[3], sizeof ct.region);
     if (s.x[4]) memcpy(ct.color, (void *)(uintptr_t)s.x[4], 16);
@@ -377,7 +560,7 @@ NVN(nvnCommandBufferResumeTransformFeedback) { (void)c; }
 // ---- copies
 typedef struct { uint64_t tex; NvnTextureView view; uint8_t has_view; int32_t region[6]; } TexRef;
 static void tex_ref(TexRef *t, uint64_t tex, uint64_t view, uint64_t region) {
-    t->tex = tex ? (uint64_t)(uintptr_t)HOST(NvnTexture, tex) : 0;
+    t->tex = tex ? (uint64_t)(uintptr_t)nvn_texture(tex, "copy", 0) : 0;
     if (view) { t->has_view = 1; memcpy(&t->view, (void *)(uintptr_t)view, sizeof t->view); }
     if (region) memcpy(t->region, (void *)(uintptr_t)region, sizeof t->region);
 }
@@ -439,8 +622,43 @@ PLAIN(nvnCommandBufferWaitEvent, CMD_WAIT_EVENT)
 PLAIN(nvnCommandBufferReportCounter, CMD_REPORT_COUNTER)
 NVN(nvnCommandBufferReportValue) { (void)c; }
 NVN(nvnCommandBufferResetCounter) { (void)c; }
-NVN(nvnCommandBufferCallCommands) { record_copy(c, CMD_CALL, 2, (uint32_t)A(1) * 8); }
-NVN(nvnCommandBufferCopyCommands) { record_copy(c, CMD_CALL, 2, (uint32_t)A(1) * 8); }
+// Call / copy a list into the one being recorded. NVN copies the called list's entries into this command buffer when
+// the call is recorded, so the game may re-record the called list right after (agl re-records its display lists on
+// worker threads every frame). Resolving the handle later, at execution (LASRecomp's CMD_CALL), raced with that. The
+// called list's records are copied here instead (its own calls were inlined when it was recorded).
+static void inline_lists(Cpu *c, const char *what) {
+    NvnCmdBuf *cb = cb_of(A(0));
+    uint64_t count = A(1), handles = A(2);
+    if (cmdbuf_log())
+        LOG("[cmdbuf] %llx %s %llu lists: %llx%s (lr %llx)\n", (unsigned long long)cb->guest, what, (unsigned long long)count,
+            (unsigned long long)(count ? *(const uint64_t *)(uintptr_t)handles : 0), count > 1 ? " ..." : "",
+            (unsigned long long)c->x[30]);
+    for (uint64_t i = 0; i < count; i++) {
+        uint64_t h = ((const uint64_t *)(uintptr_t)handles)[i];
+        NvnList *l = list_find(h);
+        if (!l) {
+            static int warned;
+            if (warned++ < 10) LOG("[nvn] %s of handle %llx: no such list\n", what, (unsigned long long)h);
+            continue;
+        }
+        if (l->recorder) {
+            static int warned;
+            if (warned++ < 10)
+                LOG("[nvn] cmdbuf %llx: %s of handle %llx, which cmdbuf %llx is still recording (lr %llx)\n",
+                    (unsigned long long)cb->guest, what, (unsigned long long)h, (unsigned long long)l->recorder,
+                    (unsigned long long)c->x[30]);
+        }
+        const CmdRec *r = (const CmdRec *)l->chunks[0].mem;
+        for (int guard = 0; guard < 10000000 && r->op != CMD_END; guard++) {
+            if (r->op == CMD_JUMP) { r = (const CmdRec *)(uintptr_t)r->x[0]; continue; }
+            CmdRec *d = rec(c, cb, r->op, r->size - (uint32_t)sizeof(CmdRec));
+            memcpy(d, r, r->size);
+            r = (const CmdRec *)((const uint8_t *)r + r->size);
+        }
+    }
+}
+NVN(nvnCommandBufferCallCommands) { inline_lists(c, "call"); }
+NVN(nvnCommandBufferCopyCommands) { inline_lists(c, "copy"); }
 NVN(nvnCommandBufferInsertDebugMarker) { (void)c; }
 NVN(nvnCommandBufferInsertDebugMarkerDynamic) { (void)c; }
 NVN(nvnCommandBufferInsertDebugMarkerStatic) { (void)c; }

@@ -6,8 +6,9 @@ fork of [LASRecomp](https://github.com/peiikai/LASRecomp) (MIT) at commit `466fe
 [letsgo-recomp](https://github.com/raulzrrs/letsgo-recomp) forked it. What changed and why: [UPSTREAM.md](UPSTREAM.md).
 The plan: [../docs/PORT-PLAN.md](../docs/PORT-PLAN.md).
 
-**Status: B0 (lean fork).** The app builds; the game doesn't run yet (B1: loader for BotW's three modules and the game
-code; B2: boot).
+**Status: B1 done.** The game library builds from your dump and loads; BotW's code starts and runs until its first
+missing piece (`nn::vi::SetLayerScalingMode`, [../research/B1-first-boot.md](../research/B1-first-boot.md)). Next:
+B2, the boot loop.
 
 **No game files, keys or game code are included**, here or in any build. You need your own dump of BotW. The game code
 is generated from it on your machine. See [../docs/LEGAL.md](../docs/LEGAL.md).
@@ -22,8 +23,18 @@ cd port
 make -j      # -> build/botwrecomp.exe
 ```
 
-`make gen` and the game library (`build/botwgame.dll`) come with B1. This tree keeps LF line endings (`.gitattributes`
-at the repository root); the bash tools break on CRLF.
+Game code, from your own dump (reWild's `scripts/diag/01-identify.ps1`, then):
+
+```bash
+make romfs-image                                          # the RomFS image tool
+powershell -File ../scripts/diag/03-prepare-game-files.ps1  # extracted/exefs, romfs/, romfs.bin (v1.5.0)
+python -m venv tools/venv && tools/venv/Scripts/python -m pip install capstone lz4 unicorn
+make gen     # C for main, sdk, subsdk0 (~1 min)
+make -j      # -> build/botwgame.dll (~30 min on 12 threads)
+build/botwrecomp.exe --play   # (PATH with C:\msys64\ucrt64\bin for the DLLs)
+```
+
+This tree keeps LF line endings (`.gitattributes` at the repository root); the bash tools break on CRLF.
 
 ## Files
 

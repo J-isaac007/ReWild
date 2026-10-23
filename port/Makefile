@@ -38,12 +38,18 @@ CXX      := clang++ $(MINFLAG) $(CROSS)
 IMGUI    := third_party/imgui
 GENFLAGS := -O1 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -Iruntime
 
+# The game's code modules as name:base, main first: the same list as GAME_MODULES in runtime/game_info.h
+GAME_MODULES := main:0x7000000000 sdk:0x7004000000 subsdk0:0x7005000000
+mod_name = $(word 1,$(subst :, ,$(1)))
+mod_base = $(word 2,$(subst :, ,$(1)))
+
 # The game code (made by `make gen` from your own game files) is its own library next to the app (runtime/gamelib.h);
 # the app itself holds none of it
-GEN_SRC  := $(wildcard $(GEN)/main/*.c) $(wildcard $(GEN)/sdk/*.c)
+GEN_SRC  := $(foreach m,$(GAME_MODULES),$(wildcard $(GEN)/$(call mod_name,$(m))/*.c))
 GEN_OBJ  := $(patsubst %.c,$(B)/obj/%.o,$(patsubst $(GEN)/%,%,$(GEN_SRC))) $(B)/obj/tools/gamelib_entry.o
 RT_SRC   := $(wildcard runtime/*.c) $(wildcard runtime/hle/*.c) $(wildcard runtime/services/*.c) \
-            $(wildcard runtime/nvn/*.c) $(wildcard runtime/nvn/maxwell/*.c) runtime/platform/$(PLATFORM).c
+            $(wildcard runtime/nvn/*.c) $(wildcard runtime/nvn/maxwell/*.c) runtime/platform/$(PLATFORM).c \
+            $(if $(GUARD_HEAP),runtime/platform/guard_heap.c)
 RT_HDRS  := $(wildcard runtime/*.h) $(wildcard runtime/platform/*.h) $(wildcard runtime/nvn/*.h) \
             $(wildcard runtime/nvn/maxwell/*.h) $(wildcard runtime/nvn/vulkan/*.h) $(wildcard runtime/ui/*.h)
 UI_SRC   := $(wildcard runtime/ui/*.mm)
@@ -110,11 +116,16 @@ endif
 # flags). A library with another id is rebuilt by the start screen, never loaded.
 GAMELIB_SRCS := tools/gen.py tools/lifter.py tools/analyze.py tools/nso.py tools/passes.py tools/patches.py \
                 tools/simd_c.py tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
-                runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h
+                runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h runtime/game_info.h
 GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(GENFLAGS)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 
 RT_OBJ   := $(patsubst runtime/%.c,$(B)/rt/%.o,$(RT_SRC))
 RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Iruntime/nvn $(DEPINC) $(OSFLAGS)
+# GUARD_HEAP=1 (Windows, debugging heap corruption): the runtime's C allocations on guard pages
+# (runtime/platform/guard_heap.h). Build it from clean objects both ways: make -B $(EXE) GUARD_HEAP=1, then -B without.
+ifdef GUARD_HEAP
+RTFLAGS  += -include runtime/platform/guard_heap.h
+endif
 CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn $(DEPINC)
 
 all: $(EXE) $(if $(strip $(GEN_SRC)),$(GAMELIB))  # (strip: two empty wildcards still leave a space)
@@ -187,11 +198,19 @@ $(B)/imgui/imgui_impl_metal.o: $(IMGUI)/backends/imgui_impl_metal.mm
 # Python: tools/venv (macOS, Linux: bin/python, Windows: Scripts/python.exe)
 PY := $(firstword $(wildcard tools/venv/bin/python) $(wildcard tools/venv/Scripts/python.exe))
 
+# every module (GAME_MODULES); --hle for sdk only: the SDK functions the runtime implements itself
 gen:
-	cd tools && ../$(PY) gen.py sdk ../extracted/exefs/sdk 0x7004000000 ../$(GEN)/sdk --hle ../runtime/hle/hle_symbols.txt $(GENSIMD)
-	cd tools && ../$(PY) gen.py main ../extracted/exefs/main 0x7000000000 ../$(GEN)/main $(GENSIMD)
+	$(foreach m,$(GAME_MODULES),cd tools && ../$(PY) gen.py $(call mod_name,$(m)) ../extracted/exefs/$(call mod_name,$(m)) \
+	    $(call mod_base,$(m)) ../$(GEN)/$(call mod_name,$(m)) \
+	    $(if $(filter sdk,$(call mod_name,$(m))),--hle ../runtime/hle/hle_symbols.txt) $(GENSIMD) && cd .. &&) true
 
 gen-objs: $(GEN_OBJ)
+
+# RomFS image from a folder, outside the start screen (tools/romfs_image.c): build/romfs_image <folder> <romfs.bin>
+romfs-image: $(B)/romfs_image$(if $(filter windows,$(PLATFORM)),.exe)
+$(B)/romfs_image$(if $(filter windows,$(PLATFORM)),.exe): tools/romfs_image.c runtime/romfs_build.c runtime/romfs_build.h
+	@mkdir -p $(dir $@)
+	$(CC) -O2 -Iruntime $(OSFLAGS) -o $@ tools/romfs_image.c runtime/romfs_build.c
 
 # Runtime objects only (no generated code, no link): quick compile check
 runtime-objs: $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ)
@@ -242,8 +261,8 @@ dist:
 	tools/zig_slim.sh $(strip $(filter-out -Iruntime,$(GENFLAGS)))  # (zig with its runtime built ahead of time)
 	cp -R build/helper/lasgen "$(DIST)/"
 	cp -R build/zig-slim "$(DIST)/zig"
-	cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
-	    "$(DIST)/gamelib-src/"
+	cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h runtime/game_info.h tools/gamelib_entry.c \
+	    runtime/hle/hle_symbols.txt "$(DIST)/gamelib-src/"
 	cp docs/icon/icon_1024.png "$(DIST)/icon.png"
 	cp third_party/fonts/Baloo2/Baloo2-SemiBold.ttf "$(DIST)/"  # (start screen font, OFL)
 	cp third_party/fonts/Baloo2/OFL.txt "$(DIST)/Baloo2-OFL.txt"
@@ -291,7 +310,7 @@ appimages:
 smoketest:
 	tools/linux/smoketest.sh
 
-.PHONY: dmg all gen gen-helper gen-objs runtime-objs deps deps-windows app dist appimage appimages smoketest
+.PHONY: dmg all gen gen-helper gen-objs runtime-objs romfs-image deps deps-windows app dist appimage appimages smoketest
 
 build/test_shaders: tools/test_shaders.m runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h
 	clang -O1 -fobjc-arc -framework Metal -framework Foundation -o $@ tools/test_shaders.m runtime/nvn/maxwell/translate.c

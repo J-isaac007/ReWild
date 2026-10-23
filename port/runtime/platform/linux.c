@@ -75,6 +75,24 @@ void plat_thread_realtime(uint64_t period_ns) {
     setpriority(PRIO_PROCESS, (id_t)gettid(), -10);  // (per thread on Linux; fails quietly without CAP_SYS_NICE)
 }
 
+// (pthread stacks are mmap'd: pages are committed as they're touched)
+int plat_thread_spawn(void **handle, void *(*fn)(void *), void *arg, uint64_t stack_size) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, stack_size);
+    pthread_t *t = malloc(sizeof *t);
+    int err = t ? pthread_create(t, &attr, fn, arg) : ENOMEM;
+    pthread_attr_destroy(&attr);
+    if (err) { free(t); return err; }
+    *handle = t;
+    return 0;
+}
+
+void plat_thread_join(void *handle) {
+    pthread_join(*(pthread_t *)handle, NULL);
+    free(handle);
+}
+
 // ---- process
 // Started from a desktop (the AppImage) there is no terminal: stdout / stderr go to <GAME_EXE_NAME>.log in the data folder
 // (runtime/paths.h; rt_paths_init runs later, so the same rule is applied here). Processes started by this one (the

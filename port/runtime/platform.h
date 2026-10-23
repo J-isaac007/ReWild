@@ -36,6 +36,13 @@ uint64_t plat_now_ns(void);                // monotonic
 void plat_sleep_until_ns(uint64_t t);      // precise wait for plat_now_ns() >= t
 void plat_thread_realtime(uint64_t period_ns);  // periodic timing thread (vsync): don't coalesce its timers
 
+// ---- threads with big stacks (guest threads: guest recursion runs on the host stack)
+// Windows reserves the stack and commits it as it's used: MinGW's pthread_create commits the whole stack up front,
+// and BotW's ~40 threads x 256 MB ran out of commit at about 30 (EAGAIN). Returns 0 on success, else an errno-style
+// code; *handle is what plat_thread_join takes.
+int plat_thread_spawn(void **handle, void *(*fn)(void *), void *arg, uint64_t stack_size);
+void plat_thread_join(void *handle);
+
 // ---- process
 void plat_init(void);                                // first thing in main()
 bool plat_exe_path(char *buf, size_t size);
@@ -63,8 +70,7 @@ bool plat_remove_tree(const char *dir);      // rm -rf
 const char *plat_symbol(uint64_t pc, uint64_t *offset);
 void plat_print_backtrace(void);
 void plat_fatal_notice(void);  // a fatal error is about to end the process: tell the user (Windows release: message box)
-void plat_crash_handler_install(void);  // per thread where the OS needs it (alternate signal stack)
-// Called by the crash handler (runtime/dispatch.c): true = fault handled (watchpoint), resume.
+void plat_crash_handler_install(void);  // per thread where the OS needs it (alternate signal stack)// Called by the crash handler (runtime/dispatch.c): true = fault handled (watchpoint), resume.
 bool rt_fault_watch(uint64_t fault_addr, uint64_t host_pc);
 void rt_fault_report(const char *what, uint64_t fault_addr, uint64_t host_pc, uint64_t host_lr) __attribute__((noreturn));
 

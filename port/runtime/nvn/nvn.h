@@ -16,12 +16,20 @@
 #define SET_HOST(guest, p) (*(uint64_t *)(uintptr_t)(guest) = (uint64_t)(uintptr_t)(p))
 #define G(T, base, off) (*(T *)((uint8_t *)(uintptr_t)(base) + (off)))
 
+typedef struct NvnTexture NvnTexture;
+// What was made from a pool before it had storage (a virtual pool before nvnMemoryPoolMapVirtual): fixed up when it's
+// mapped (objects.c).
+typedef struct { NvnTexture *tex; uint64_t buffer; uint64_t offset; } NvnPoolUser;
 typedef struct NvnPool {
     uint64_t storage, size;
     uint32_t flags;
+    NvnPoolUser *users;
+    int nusers, cap_users;
 } NvnPool;
 
-typedef struct NvnTexture {
+#define NVN_TEXTURE_MAGIC 0x54584e56u  // NvnTexture.magic while initialized
+struct NvnTexture {
+    uint32_t magic;
     TexLayout layout;
     uint32_t target, format, flags, width, height, depth, levels, samples, ds_mode;
     uint8_t swizzle[4];
@@ -32,7 +40,11 @@ typedef struct NvnTexture {
     void *backend;  // renderer-side texture
     uint64_t debug_id;
     char label[64];
-} NvnTexture;
+};
+
+// The host texture behind a guest NVNtexture*, NULL (logged, with what used it) if the guest object holds none: never
+// initialized, or finalized. Recorded commands keep host texture pointers, so a dangling one shows up here.
+NvnTexture *nvn_texture(uint64_t guest, const char *what, uint64_t lr);
 
 typedef struct {
     uint32_t min_filter, mag_filter, wrap[3], compare_mode, compare_func, reduction;
@@ -85,12 +97,13 @@ typedef struct NvnSync {
     volatile uint64_t seq;  // GPU submission this fence belongs to (renderer_fence_seq), 0 = none
 } NvnSync;
 
-// ---- command recording (stored in guest command memory)
+// ---- command recording (records in runtime-owned list storage, cmdbuf.c)
+typedef struct NvnList NvnList;
 typedef struct {
-    uint64_t mem;    // current command memory chunk (guest address)
-    uint64_t size;   // chunk size
-    uint64_t used;   // bytes used in chunk
-    uint64_t start;  // first record of the list being recorded
+    uint64_t mem, size, used;              // command memory the game added: accounted, never written
+    uint64_t ctrl, ctrl_size, ctrl_used;   // control memory the game added: where each list is placed
+    uint64_t start;  // handle of the list being recorded
+    NvnList *list;   // its records
     uint64_t callback, callback_data;
     bool recording;
     uint64_t guest;  // the guest NVNcommandBuffer*
@@ -103,6 +116,10 @@ typedef struct {
     float f[4];         // s0..s3 of the call
     uint8_t extra[];
 } CmdRec;
+
+// A recorded list's first record (the executors' way from a command handle to its records), NULL if the handle names
+// no list (cmdbuf.c).
+const CmdRec *nvn_list_first(uint64_t handle);
 
 enum {
     CMD_END = 0, CMD_JUMP, CMD_CALL,

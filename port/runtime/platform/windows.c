@@ -1,6 +1,8 @@
 // Windows host layer (runtime/platform.h).
 #include <windows.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <process.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -116,6 +118,30 @@ void plat_sleep_until_ns(uint64_t t) {
 void plat_thread_realtime(uint64_t period_ns) {
     (void)period_ns;
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+}
+
+typedef struct { void *(*fn)(void *); void *arg; } SpawnArg;
+static unsigned __stdcall spawn_main(void *p) {
+    SpawnArg a = *(SpawnArg *)p;
+    free(p);
+    a.fn(a.arg);
+    return 0;
+}
+
+int plat_thread_spawn(void **handle, void *(*fn)(void *), void *arg, uint64_t stack_size) {
+    SpawnArg *a = malloc(sizeof *a);
+    if (!a) return ENOMEM;
+    a->fn = fn, a->arg = arg;
+    // STACK_SIZE_PARAM_IS_A_RESERVATION: the size is reserved, not committed (platform.h)
+    uintptr_t h = _beginthreadex(NULL, (unsigned)stack_size, spawn_main, a, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+    if (!h) { int e = errno ? errno : EAGAIN; free(a); return e; }
+    *handle = (void *)h;
+    return 0;
+}
+
+void plat_thread_join(void *handle) {
+    WaitForSingleObject((HANDLE)handle, INFINITE);
+    CloseHandle((HANDLE)handle);
 }
 
 // ---- process

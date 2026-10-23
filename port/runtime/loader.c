@@ -4,7 +4,7 @@
 
 #include "rt.h"
 
-Module g_modules[4];
+Module g_modules[GAME_MAX_MODULES];
 int g_nmodules;
 
 enum { DT_NULL = 0, DT_PLTRELSZ = 2, DT_HASH = 4, DT_STRTAB = 5, DT_SYMTAB = 6, DT_RELA = 7, DT_RELASZ = 8,
@@ -174,12 +174,26 @@ static void relocate(Module *m) {
 
 void loader_load(const char *exefs) {
     char path[1024];
-    static const struct { const char *name; uint64_t base; } mods[] = {{"main", MAIN_BASE}, {"sdk", SDK_BASE}};
-    for (unsigned i = 0; i < 2; i++) {
+#define X(n, b) {#n, b},
+    static const struct { const char *name; uint64_t base; } mods[] = {GAME_MODULES};  // (runtime/game_info.h)
+#undef X
+    enum { NMODS = sizeof mods / sizeof *mods };
+    for (unsigned i = 0; i < NMODS; i++) {
+        snprintf(path, sizeof path, "%s/%s", exefs, mods[i].name);
+        FILE *f = fopen(path, "rb");
+        if (!f) {  // (main and sdk are required; a missing subsdk is left out)
+            if (i < 2) FATAL("cannot load %s\n", path);
+            LOG("[loader] no %s: left out\n", mods[i].name);
+            continue;
+        }
+        fclose(f);
         Module *m = &g_modules[g_nmodules++];
         m->name = mods[i].name;
-        snprintf(path, sizeof path, "%s/%s", exefs, m->name);
         load_nso(m, path, mods[i].base);
+        // a module bigger than its slot would overwrite the next one (or the HLE stubs after the last)
+        uint64_t next = i + 1 < NMODS ? mods[i + 1].base : HLE_BASE;
+        if (m->base + m->size > next)
+            FATAL("module %s (0x%llx bytes) overlaps the next one: fix GAME_MODULES\n", m->name, (unsigned long long)m->size);
     }
     for (int i = 0; i < g_nmodules; i++) relocate(&g_modules[i]);
 }

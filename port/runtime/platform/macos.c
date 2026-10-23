@@ -71,6 +71,24 @@ void plat_thread_realtime(uint64_t period_ns) {
                       THREAD_TIME_CONSTRAINT_POLICY_COUNT);
 }
 
+// (pthread stacks are mmap'd: pages are committed as they're touched)
+int plat_thread_spawn(void **handle, void *(*fn)(void *), void *arg, uint64_t stack_size) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, stack_size);
+    pthread_t *t = malloc(sizeof *t);
+    int err = t ? pthread_create(t, &attr, fn, arg) : ENOMEM;
+    pthread_attr_destroy(&attr);
+    if (err) { free(t); return err; }
+    *handle = t;
+    return 0;
+}
+
+void plat_thread_join(void *handle) {
+    pthread_join(*(pthread_t *)handle, NULL);
+    free(handle);
+}
+
 bool plat_exe_path(char *buf, size_t size) {
     uint32_t len = (uint32_t)size;
     return _NSGetExecutablePath(buf, &len) == 0;
@@ -90,7 +108,6 @@ const char *plat_symbol(uint64_t pc, uint64_t *offset) {
 }
 
 void plat_fatal_notice(void) {}  // (the log / terminal shows it)
-
 void plat_print_backtrace(void) {
     void *bt[64];
     int n = backtrace(bt, 64);

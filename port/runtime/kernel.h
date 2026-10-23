@@ -21,7 +21,7 @@ typedef KObject KEvent;
 struct KThread {
     KObject obj;  // signaled when the thread exits
     Cpu cpu;
-    pthread_t host;
+    void *host;  // plat_thread_spawn's handle
     uint64_t entry, tlr, id;
     uint32_t handle;
     int prio, core;
@@ -32,6 +32,8 @@ struct KThread {
     uint32_t wait_tag, wait_result;
     KThread *wnext;
     KThread *snext;        // in WaitSynchronization (g_syncwaiters)
+    uint64_t sync_handles; // ... on these handles (guest uint32_t[sync_count]; LARECOMP_DUMP_THREADS shows them)
+    int32_t sync_count;
     pthread_cond_t cond;   // each thread sleeps on its own condition; wakers signal it directly
     // in-place reboot (kernel_stop_threads): thread_main's setjmp point, where the thread unwinds to and ends
     jmp_buf unwind;

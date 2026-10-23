@@ -89,12 +89,23 @@ reWild/
   - Title id `01007EF00011E000`, app name, data folder, ini name.
 - Makefile: game id `botw`; `GAMELIB_SRCS` without `rando/patch_variants.json`.
 
-### B1: loader and game code (exit: `botwgame.dll` builds from your dump and loads)
+### B1: loader and game code (exit: `botwgame.dll` builds from your dump and loads) — done 2026-10-23
+
+`botwgame.dll` (213 MB) builds from the v1.5.0 dump and loads. All three modules map and run their constructors. BotW's code then runs until a null `nn::vi::Layer` in `SetLayerScalingMode`, B2's first item. Details: [research/B1-first-boot.md](../research/B1-first-boot.md). Original checklist:
 - Loader: a module list (`main` `0x7000000000`, `sdk` `0x7004000000`, `subsdk0` `0x7005000000`). Port letsgo-recomp's 4-module change, or nxrt's game-library format v2 (`gamelib.*`, `dispatch.c`).
 - `make gen` for all three modules; build `botwgame.dll` (expect ~5–8 min with 12 threads).
 - Game files: a reWild script that writes `exefs/` (the v1.5.0 one) and the **v1.5.0 RomFS**. The 1.5.0 update inside your cartridge image patches the base RomFS (BKTR), so it needs `hactool --basenca`. Output is about 14 GB.
 
-### B2: boot to the first frame (exit: the Nintendo logo appears)
+### B2: boot to the first frame (exit: the Nintendo logo appears) — done 2026-10-23
+
+BotW shows **"Nintendo Presents"** and plays the opening "...Open your eyes..." sequence, at about 40–60 fps. Twelve stops fixed:
+- `vi`, audio REV4, `nfp`, Windows thread stacks.
+- NVN command storage redesigned. agl records display lists on several threads into shared command *and* control memory, so lists now live in runtime-owned storage per place, and calls copy the called records when recorded.
+- Virtual memory pools.
+- Samplers and textures copied by value.
+- A render lock.
+
+It stops at ~frame 1500, in the model renderer (`gsys::ModelUnitDrawArray::drawEachNode_`, a garbage `NVNbuffer*`), as the Shrine of Resurrection loads; that's B3's first item. Log: [research/B2-boot-log.md](../research/B2-boot-log.md). Original checklist:
 - Add the stubs and ports from the services table above.
 - Compare the 93 `svc` sites with `runtime/kernel.c`; add the missing ones.
 - Loop: run → `[hle] UNIMPLEMENTED` / crash → implement → repeat, the letsgo-recomp way. Keep a running list in `research/B2-boot-log.md`.
@@ -117,5 +128,7 @@ The same model as LASRecomp and letsgo-recomp ([LEGAL.md](LEGAL.md)): no game fi
 ## Next actions
 
 1. ~~B0: create `port/` from LASRecomp `466fee6`, strip the Zelda layer, rename, build.~~ Done.
-2. Write `scripts/diag/03-extract-romfs.ps1` (v1.5.0 patched RomFS + exefs into the layout the runtime expects).
-3. B1 loader change, then the first `make gen` with all three modules.
+2. ~~Write the game-files script~~ Done: `scripts/diag/03-prepare-game-files.ps1`.
+3. ~~B1 loader change, first `make gen` with all three modules~~ Done.
+4. ~~B2: `SetLayerScalingMode`, then the boot loop to the Nintendo logo~~ Done.
+5. B3: the garbage `NVNbuffer*` in `gsys::ModelUnitDrawArray::drawEachNode_` (~frame 1500, Shrine of Resurrection), then the shader-translator gaps (`FS translate failed: unknown instruction`).
