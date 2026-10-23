@@ -9,6 +9,7 @@ Research toward a native PC (Windows/Linux) port of *The Legend of Zelda: Breath
 | Path | Purpose |
 |---|---|
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Architecture and phased plan |
+| [docs/PORT-PLAN.md](docs/PORT-PLAN.md) | Concrete plan: BotW v1.5.0 on LASRecomp's runtime |
 | [docs/TOOLS.md](docs/TOOLS.md) | Tool inventory and where each comes from |
 | [docs/LEGAL.md](docs/LEGAL.md) | Ground rules for inputs and publishing |
 | `research/` | Measurements and findings (generated JSON is git-ignored) |

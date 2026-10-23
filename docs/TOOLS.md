@@ -35,6 +35,16 @@ Headless runs that execute Java scripts fail in Felix (Ghidra's OSGi framework) 
 
 ## Phase 3+: recompiler and runtime
 
+Installed 2026-10-23:
+
+| Tool | Location | Note |
+|---|---|---|
+| nxrt | `C:\tools\src\nxrt` (commit ffa2315, LF line endings) | Recompiler (`tools/gen.py`) + runtime. Its generator venv (capstone 5.0.7, lz4, unicorn 2.1.4) is in `examples/game-template/tools/venv` (Python 3.14) |
+| LASRecomp | `C:\tools\src\LASRecomp` (commit 466fee6) | Fallback runtime; Windows app builds |
+| MSYS2 UCRT64 | `C:\msys64` | clang/lld 23.1.3, make, SDL3 3.4.18, FFmpeg, Vulkan 1.4.363, shaderc 2026.4, spirv-tools, VMA, validation layers, nasm, gdb. Build from a UCRT64 shell. Driving bash from PowerShell needs a script file, since quoting gets mangled |
+
+Originally planned (now mostly covered by nxrt):
+
 | Tool | Use |
 |---|---|
 | LLVM/clang 18+, CMake, Ninja | Build the recompiler and generated code (LP64 needed for decomp swap-in) |
