@@ -1,0 +1,25 @@
+# Game data, keys and anything derived from them must never be committed.
+dumps/
+keys/
+extracted/
+generated/
+build/
+/ghidra/
+*.keys
+*.nsp
+*.xci
+*.nca
+*.tik
+*.nso
+*.nro
+*.elf
+*.nacp
+*.gzf
+*.gpr
+*.rep/
+
+# Local tool binaries and caches
+tools/bin/
+research/cache/
+research/identity.json
+research/nso-survey.json
