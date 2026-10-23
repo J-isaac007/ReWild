@@ -2,7 +2,7 @@
 // functions (by decomp status tag), names, imports, indirect calls/branches,
 // SVCs, NVN references, and error bookmarks (instructions Ghidra couldn't model).
 // Read-only; run headless with -process <program> -noanalysis -readOnly.
-// @category reWild
+// @category ReWild
 
 import java.util.Map;
 import java.util.TreeMap;

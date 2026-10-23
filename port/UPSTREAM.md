@@ -30,7 +30,7 @@ isn't one of these.
 | File | Change |
 |---|---|
 | `runtime/kernel.c` | `svcGetInfo` 18 (program id): `GAME_TITLE_ID` instead of LA's `0x01006BB00C6F0000` |
-| `runtime/ui/launcher.mm` | Build id check against BotW v1.5.0; version text; title; update feed → reWild's releases; version tag `alpha_b0` (never outranked by an update) |
+| `runtime/ui/launcher.mm` | Build id check against BotW v1.5.0; version text; title; update feed → ReWild's releases; version tag `alpha_b0` (never outranked by an update) |
 | `runtime/ui/menu.mm` | Tabs: Controls, Video, Audio, Quit (ids unchanged). Removed: Save Editor, Randomizer, Warp, Cheats, Gameplay, Cosmetics; the LA overlays; Video's Aspect ratio / Remove blur / Hide Hero Mode icon (LA patches) |
 | `runtime/gamelib.h`, `gamebuild.c`, `paths.{c,h}`, `settings.c`, `platform/{windows,linux}.c`, `nvn/vulkan/device.c` | Names from `game_info.h`: `botwrecomp(.exe/.log/.ini)`, `botwgame.dll`, data folder, bundle id, message boxes, window title |
 | `Makefile` | Output names; `all` builds the game library only when there is generated code (`$(strip)`: upstream builds it with none and fails); no randomizer helper (gen helper venv: `build/gen-venv`); `--error-limit=0` |

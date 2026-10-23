@@ -12,7 +12,7 @@
 //             decomp_U (not decompiled).
 //
 // Args: <path to uking_functions.csv> [labels|functions]  (default: functions)
-// @category reWild
+// @category ReWild
 
 import java.io.BufferedReader;
 import java.io.File;

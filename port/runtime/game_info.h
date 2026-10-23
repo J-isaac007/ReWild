@@ -1,7 +1,7 @@
-// Who the game is (reWild B0): one place for what LASRecomp spread over the launcher, kernel, paths and platform code.
+// Who the game is (ReWild B0): one place for what LASRecomp spread over the launcher, kernel, paths and platform code.
 #pragma once
 
-#define GAME_APP_NAME      "reWild"                                     // window title, message boxes, start screen
+#define GAME_APP_NAME      "ReWild"                                     // window title, message boxes, start screen
 #define GAME_FULL_NAME     "The Legend of Zelda: Breath of the Wild"
 #define GAME_VERSION_LABEL "1.5.0"                                      // the only build the decomp's symbols fit
 #define GAME_TITLE_ID      0x01007EF00011E000ull                        // program id (svcGetInfo 18)

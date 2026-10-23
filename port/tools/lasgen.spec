@@ -1,7 +1,7 @@
 # PyInstaller spec: the game code generator (tools/gen.py and its modules) as a standalone onedir helper, so the start
 # screen's setup can build the game code on the player's machine without Python (runtime/gamebuild.c).
 # `make gen-helper` -> build/helper/lasgen/ (lasgen[.exe] + _internal/). Same command line as gen.py. (LASRecomp also
-# bundled its randomizer's tools/rando/patch_variants.json; reWild has none, and gen.py runs without it.)
+# bundled its randomizer's tools/rando/patch_variants.json; ReWild has none, and gen.py runs without it.)
 import glob
 import importlib.util
 import os

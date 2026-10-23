@@ -1,4 +1,4 @@
-# reWild (BotW v1.5.0) build, based on LASRecomp (port/UPSTREAM.md)
+# ReWild (BotW v1.5.0) build, based on LASRecomp (port/UPSTREAM.md)
 # macOS: Homebrew clang/SDL3/FFmpeg, Metal renderer.
 # Windows: MSYS2 UCRT64 shell (see docs/BUILD-windows.md), clang + Vulkan renderer.
 # Linux: clang + Vulkan renderer, x86-64 or aarch64 (see docs/linux.md).
@@ -221,7 +221,7 @@ $(B)/rt/platform/windows_rc.o: runtime/platform/windows.rc docs/icon/icon.ico
 
 VERSION  := $(shell sed -n 's/^\#define LARECOMP_VERSION "\(.*\)"/\1/p' runtime/ui/launcher.mm)
 
-# macOS: build/reWild.app, runs on macOS $(APP_MIN)+: the game rebuilt for that in build/mac15 against build/deps
+# macOS: build/ReWild.app, runs on macOS $(APP_MIN)+: the game rebuilt for that in build/mac15 against build/deps
 # (`make deps`: SDL3, LGPL FFmpeg, keystone, Python, from pinned sources), the generator helper when built
 # (`make gen-helper` after `make deps`), packaged by tools/bundle_macos.sh. No game files or fonts.
 APP_MIN  := 15.0
@@ -233,11 +233,11 @@ app:
 	$(MAKE) B=$(APP_B) MACOS_MIN=$(APP_MIN) DEPS=$(CURDIR)/build/deps $(APP_B)/botwrecomp
 	MACOS_MIN=$(APP_MIN) tools/bundle_macos.sh $(APP_B)/botwrecomp
 
-# macOS release disk image (the .app + an Applications shortcut to drag it onto): build/dist/reWild-<v>-macOS.dmg
+# macOS release disk image (the .app + an Applications shortcut to drag it onto): build/dist/ReWild-<v>-macOS.dmg
 dmg: app
 	tools/make_dmg.sh
 
-# Windows: build/dist/reWild-<version>-windows.zip, top folder "reWild/": the exe, what the start screen builds the
+# Windows: build/dist/ReWild-<version>-windows.zip, top folder "ReWild/": the exe, what the start screen builds the
 # game code with on the player's machine (make gen-helper,
 # tools/fetch_zig.sh slimmed by tools/zig_slim.sh: its runtime built ahead of time, gamelib-src/, the exe's import library)
 # and the DLLs they load (runs without MSYS2). No game code. The exe is a release build in $(WIN_B):
@@ -246,7 +246,7 @@ dmg: app
 # with build/deps-win/bin first (the FFmpeg DLL names are the same as MSYS2's GPL ones). vulkan-1.dll is left
 # out: every Vulkan driver installs the loader in System32. Saves and game files go next to the exe at run time.
 # Needs: Windows 10+ x64, a Vulkan 1.3 driver, an AVX2 CPU (GENARCH x86-64-v3; checked at startup).
-DIST     := build/dist/reWild
+DIST     := build/dist/ReWild
 WIN_B    := build/win-release
 deps-windows:
 	tools/build_deps_windows.sh
@@ -270,14 +270,14 @@ dist:
 	PATH="$(CURDIR)/build/deps-win/bin:$$PATH" ldd $(WIN_B)/botwrecomp.exe | awk '(/ucrt64/ || /deps-win/) && !/vulkan-1/ {print $$3}' | sort -u | \
 	    xargs -I{} cp -u {} "$(DIST)/"
 	! ls "$(DIST)" | grep -iE 'x264|x265|xvid|postproc'  # (no GPL codec libraries in the release)
-	cd build/dist && if command -v zip >/dev/null; then zip -qr "reWild-$(VERSION)-windows.zip" "reWild"; \
-	    else /c/Windows/System32/tar.exe -a -cf "reWild-$(VERSION)-windows.zip" "reWild"; fi
-	@echo "build/dist/reWild-$(VERSION)-windows.zip"
+	cd build/dist && if command -v zip >/dev/null; then zip -qr "ReWild-$(VERSION)-windows.zip" "ReWild"; \
+	    else /c/Windows/System32/tar.exe -a -cf "ReWild-$(VERSION)-windows.zip" "ReWild"; fi
+	@echo "build/dist/ReWild-$(VERSION)-windows.zip"
 
 # The game code generator as a standalone helper, so players need no Python (tools/lasgen.spec): build/helper/lasgen/,
 # frozen by PyInstaller in its own venv (build/gen-venv), shipped as lasgen/ next to the exe or in Contents/Resources.
 # The start screen's setup runs it on the player's own game files (runtime/gamebuild.c). PyInstaller only builds for the
-# OS it runs on. (LASRecomp's venv also held its seed generator's packages; reWild has no randomizer.)
+# OS it runs on. (LASRecomp's venv also held its seed generator's packages; ReWild has no randomizer.)
 ifeq ($(PLATFORM),macos)
 GEN_PY    ?= $(firstword $(wildcard build/deps/python/bin/python3.12) python3.12)
 GEN_VPY   := build/gen-venv/bin/python
@@ -298,7 +298,7 @@ build/gen-venv/.ok:
 	$(GEN_VPY) -m pip install -q capstone==5.0.9 unicorn==2.1.4 lz4==4.4.5 pyinstaller==6.22.3
 	touch $@
 
-# Linux: build/dist/reWild-<version>-linux-<arch>.AppImage, built in Ubuntu 22.04 containers (podman) with SDL3, LGPL
+# Linux: build/dist/ReWild-<version>-linux-<arch>.AppImage, built in Ubuntu 22.04 containers (podman) with SDL3, LGPL
 # FFmpeg, shaderc and the seed generator helper inside; the Vulkan loader and GPU drivers are the system's.
 # `make appimage` (ARCH: this machine's, or aarch64 cross-compiled), `make appimages` both. See docs/linux.md.
 appimage:

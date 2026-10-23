@@ -1,6 +1,6 @@
 // Start screen, shown before the game boots (user 2026-10-08, styled after Dusklight's launcher): PLAY (with
 // ‹ Vanilla / seed › picker), SETTINGS, QUIT, game-files status at the lower left. Nothing of the game ships with
-// reWild: on first launch the user picks the folder with their own game files (BotW v1.5.0), we check the main
+// ReWild: on first launch the user picks the folder with their own game files (BotW v1.5.0), we check the main
 // module's build id, copy the files and build the game's data image; PLAY stays disabled until that worked. The background is a frame of the game's own title movie (from the user's files) once extracted.
 //
 // Skipped with --play, LARECOMP_NO_LAUNCHER=1, or any scripted test run (LARECOMP_INPUT): tests boot straight in.

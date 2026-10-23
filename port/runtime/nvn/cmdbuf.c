@@ -1,7 +1,7 @@
 // NVN command buffers. A recorded list's commands are CmdRec records in storage the runtime owns, one list per place
 // it's recorded at (control memory position and command buffer, below), not in the game's command memory: BotW's agl
 // display lists have several threads recording into the same command memory at once, which corrupted the lists while
-// records lived there (LASRecomp's design; reWild research/B2-boot-log.md). Command and control memory are still
+// records lived there (LASRecomp's design; ReWild research/B2-boot-log.md). Command and control memory are still
 // accounted (used / free move a little per command and per list, as the game's offset bookkeeping expects) but never
 // written. A command buffer without control memory places its lists by their command memory position instead.
 #include <stdlib.h>
@@ -49,7 +49,7 @@ static bool cmdbuf_log(void) {
 // agl::DisplayList hands every display list a slice of one shared ring at its current offset and moves the offset on at
 // endDisplayList, so display lists recorded at once on different threads (presumably serialized on the console's
 // cooperative per-core scheduling, truly parallel here) start at the same position. Keyed by position alone they shared
-// one list and corrupted it (reWild research/B2-boot-log.md).
+// one list and corrupted it (ReWild research/B2-boot-log.md).
 typedef struct { uint8_t *mem; uint32_t size; } Chunk;
 struct NvnList {
     uint64_t handle;

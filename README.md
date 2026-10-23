@@ -1,4 +1,4 @@
-# reWild
+# ReWild
 
 Research toward a native PC (Windows/Linux) port of *The Legend of Zelda: Breath of the Wild* (Nintendo Switch build) via static recompilation, with incremental swap-in of the community decompilation.
 

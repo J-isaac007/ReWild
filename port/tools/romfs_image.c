@@ -1,6 +1,6 @@
 // romfs_image <romfs folder> <romfs.bin>: the RomFS image the runtime reads (runtime/services/fs.c), built from a
 // folder of game files with the start screen's own builder (runtime/romfs_build.c). For setups that skip the start
-// screen: reWild's scripts/diag/03-prepare-game-files.ps1 (an update's patched RomFS only comes out as a folder).
+// screen: ReWild's scripts/diag/03-prepare-game-files.ps1 (an update's patched RomFS only comes out as a folder).
 // `make romfs-image` -> build/romfs_image(.exe).
 #include <inttypes.h>
 #include <stdio.h>

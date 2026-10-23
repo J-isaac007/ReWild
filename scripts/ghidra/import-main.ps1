@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Phase 2: imports a BotW main.nso into the reWild Ghidra project with decomp names.
+  Phase 2: imports a BotW main.nso into the ReWild Ghidra project with decomp names.
 .DESCRIPTION
   Runs Ghidra headless, detached from the calling shell so it survives the
   terminal closing:

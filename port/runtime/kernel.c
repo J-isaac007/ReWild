@@ -856,7 +856,7 @@ void kernel_init(void) {
 }
 
 // LARECOMP_DUMP_THREADS=<seconds> (debugging a hang): every that many seconds (3 times), log each guest thread's
-// state and what it waits on. lr is the guest call site of its blocking svc (name it with tools/sym.py, or reWild's
+// state and what it waits on. lr is the guest call site of its blocking svc (name it with tools/sym.py, or ReWild's
 // scripts/dev/decomp-name.ps1 for main).
 static void kernel_dump_threads(void) {
     static const char *const kinds[] = {"-", "mutex", "condvar", "arbiter"};

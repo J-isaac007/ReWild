@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Prints Ghidra's decompiled C for the functions containing the given addresses (v1.5.0 main, reWild's Ghidra project).
+  Prints Ghidra's decompiled C for the functions containing the given addresses (v1.5.0 main, ReWild's Ghidra project).
 .DESCRIPTION
   Runtime (0x70...) or decomp (0x71...) addresses. Runs Ghidra headless read-only against ghidra\reWild.gpr (made by
   import-main.ps1) with the headless settings folder (see docs\TOOLS.md). Close the project in the Ghidra GUI first.

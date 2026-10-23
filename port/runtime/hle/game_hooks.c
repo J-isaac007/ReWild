@@ -1,4 +1,4 @@
-// Neutral versions of the game hooks the shared runtime calls (reWild B0).
+// Neutral versions of the game hooks the shared runtime calls (ReWild B0).
 //
 // In LASRecomp these lived in its Link's Awakening layer (hle/{chamber,digs,doorjump,escape,flags_ext,hookshot,
 // keysanity,miniboss,pets,pot_glow,qol,rescue,shopsanity,souls,warp,widescreen,mirror}.c, rando.c, the save editor):

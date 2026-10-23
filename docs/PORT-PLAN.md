@@ -1,6 +1,6 @@
 # Port plan: BotW v1.5.0 on LASRecomp's runtime
 
-Decided 2026-10-23 after [research/P3-recompiler-eval.md](../research/P3-recompiler-eval.md): reWild builds on
+Decided 2026-10-23 after [research/P3-recompiler-eval.md](../research/P3-recompiler-eval.md): ReWild builds on
 [LASRecomp](https://github.com/peiikai/LASRecomp) (MIT, commit `466fee6`), the way
 [letsgo-recomp](https://github.com/raulzrrs/letsgo-recomp) put Pokémon Let's Go on it. This replaces phases P3–P7 of
 [ROADMAP.md](ROADMAP.md) with concrete steps; P8 (decomp swap-in) and P9 (PC features) stay as planned.
@@ -60,10 +60,10 @@ From BotW v1.5.0's `main.npdm` (what the game may open; not all are used at boot
 
 ## Repository layout
 
-Like letsgo-recomp: a copy of LASRecomp's core at a pinned commit, with its MIT notice, inside reWild.
+Like letsgo-recomp: a copy of LASRecomp's core at a pinned commit, with its MIT notice, inside ReWild.
 
 ```
-reWild/
+ReWild/
   port/                 lean fork of LASRecomp @ 466fee6 (LICENSE-LASRecomp kept)
     Makefile            GAME = botw; modules main/sdk/subsdk0
     runtime/            LAS runtime minus the Zelda layer, plus BotW hooks
@@ -94,7 +94,7 @@ reWild/
 `botwgame.dll` (213 MB) builds from the v1.5.0 dump and loads. All three modules map and run their constructors. BotW's code then runs until a null `nn::vi::Layer` in `SetLayerScalingMode`, B2's first item. Details: [research/B1-first-boot.md](../research/B1-first-boot.md). Original checklist:
 - Loader: a module list (`main` `0x7000000000`, `sdk` `0x7004000000`, `subsdk0` `0x7005000000`). Port letsgo-recomp's 4-module change, or nxrt's game-library format v2 (`gamelib.*`, `dispatch.c`).
 - `make gen` for all three modules; build `botwgame.dll` (expect ~5–8 min with 12 threads).
-- Game files: a reWild script that writes `exefs/` (the v1.5.0 one) and the **v1.5.0 RomFS**. The 1.5.0 update inside your cartridge image patches the base RomFS (BKTR), so it needs `hactool --basenca`. Output is about 14 GB.
+- Game files: a ReWild script that writes `exefs/` (the v1.5.0 one) and the **v1.5.0 RomFS**. The 1.5.0 update inside your cartridge image patches the base RomFS (BKTR), so it needs `hactool --basenca`. Output is about 14 GB.
 
 ### B2: boot to the first frame (exit: the Nintendo logo appears) — done 2026-10-23
 

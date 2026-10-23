@@ -3,7 +3,7 @@
 Status as of 2026-10-23:
 - P0–P1 done ([research/P1-identify.md](../research/P1-identify.md)).
 - P2 baseline done for v1.5.0 ([research/P2-baseline.md](../research/P2-baseline.md)); its follow-ups and the v1.9.0 symbol port remain.
-- **P3 recompiler question answered** ([research/P3-recompiler-eval.md](../research/P3-recompiler-eval.md)): nxrt's generator lifts all of v1.5.0 `main` with 0 unsupported instructions, and the C compiles. reWild builds on nxrt/LASRecomp instead of a new recompiler.
+- **P3 recompiler question answered** ([research/P3-recompiler-eval.md](../research/P3-recompiler-eval.md)): nxrt's generator lifts all of v1.5.0 `main` with 0 unsupported instructions, and the C compiles. ReWild builds on nxrt/LASRecomp instead of a new recompiler.
 - **Base chosen: LASRecomp's runtime.** The concrete plan for phases P3–P7 is [PORT-PLAN.md](PORT-PLAN.md).
 
 ## Target

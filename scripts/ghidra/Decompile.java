@@ -1,7 +1,7 @@
 // Prints Ghidra's decompiled C of the functions containing the given addresses (decomp / Ghidra addresses: main at
 // 0x7100000000; the runtime's 0x70... addresses are shifted up by 0x100000000 here). Read-only.
 // Headless: -process main.nso -noanalysis -readOnly -postScript Decompile.java <addr> [addr...]
-// @category reWild
+// @category ReWild
 
 import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;
